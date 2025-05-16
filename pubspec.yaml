@@ -1,5 +1,5 @@
 name: flutter_locale_json
-description: CLI tool to scan _LocaleBase subclasses and generate locale JSON files.
+description: CLI tool to scan LocaleBase subclasses and generate locale JSON files.
 version: 0.0.5
 homepage:
 
@@ -11,9 +11,11 @@ dependencies:
   analyzer: 6.2.0
   dart_style: 2.3.6
   args: 2.5.0
+  path: 1.8.3
   flutter:
     sdk: flutter
 
+# dev_dependencies里的包,在其他项目运行可执行文件时,不会被解析
 dev_dependencies:
 
   flutter_test:

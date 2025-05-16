@@ -1,5 +1,5 @@
 import 'package:args/args.dart';
-import 'package:flutter_locale_json/flutter_locale_json.dart';
+import 'package:flutter_locale_json/generate_locales.dart';
 
 /// ------------------------------------------------------------
 Future<void> main(List<String> arguments) async {

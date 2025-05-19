@@ -1,5 +1,5 @@
 library flutter_locale_json;
-export 'locale_base.dart';
+export 'src/locale_base.dart';
 
 import 'dart:convert';
 import 'dart:io';

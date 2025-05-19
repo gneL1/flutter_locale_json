@@ -12,6 +12,8 @@ dependencies:
   dart_style: 2.3.6
   args: 2.5.0
   path: 1.8.3
+  yaml_edit: ^2.2.2
+  pubspec_parse: 1.2.3
   flutter:
     sdk: flutter
 

@@ -18,8 +18,8 @@ final _encoder = const JsonEncoder.withIndent('  ');
 final _formatter = DartFormatter();
 
 /// 入口由 bin/generate.dart 调用
-Future<void> generateLocales({required String lang}) async {
-  final jsonPath = p.join('assets', 'translations', '$lang.json');
+Future<void> generateLocales({required String lang, required String jsonDir}) async {
+  final jsonPath = p.join(jsonDir, '$lang.json');
 
   final projectDir = Directory.current;
   final libDir = Directory(p.join(projectDir.path, 'lib')); // 🔹 path.join

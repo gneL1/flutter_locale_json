@@ -12,6 +12,8 @@ dependencies:
   dart_style: 2.3.6
   args: 2.5.0
   path: 1.8.3
+  yaml_edit: 2.2.2
+  pubspec_parse: 1.2.3
   flutter:
     sdk: flutter
 
@@ -30,7 +32,6 @@ executables:
 
 # The following section is specific to Flutter packages.
 flutter:
-
   # To add assets to your package, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

@@ -1,5 +1,6 @@
 import 'package:args/args.dart';
-import 'package:flutter_locale_json/generate_locales.dart';
+import 'package:flutter_locale_json/cli/config.dart';
+import 'package:flutter_locale_json/cli/generate_locales.dart';
 
 /// ------------------------------------------------------------
 Future<void> main(List<String> arguments) async {
@@ -9,5 +10,9 @@ Future<void> main(List<String> arguments) async {
   final argResults = parser.parse(arguments);
   final lang = argResults['lang'] as String;
 
-  await generateLocales(lang: lang);   // 调用核心
+  ///  准备目录（自动写入 pubspec.yaml & pub get）
+  final jsonDir = await prepareTranslationsDir();
+
+  /// 生成翻译文件
+  await generateLocales(lang: lang, jsonDir: jsonDir);
 }

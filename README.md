@@ -20,14 +20,16 @@
 
 ## 主要特性
 
-| 功能       | 说明                                                        |
-|----------|-----------------------------------------------------------|
-| **零配置**  | 只要你的类继承（或 mixin/on）自 `LocaleBase` 并声明 `String` 字段，即可被自动识别 |
-| **双向同步** | 新增字段 → 自动加入 JSON；删除字段 → JSON 自动清理                         |
-| **源码重写** | 把硬编码中文（或其它语言）字面量替换为 key，消除重复文本                            |
-| **多语言**  | `--lang=en_US / zh_CN / …` 一行命令生成任意语言包                    |
-| **跨平台**  | Windows、macOS、Linux、Flutter Web / 移动端均可使用                 |
-| **可脚本化** | 标准 `dart run` / `dart pub global` 可直接调用，易于集成 CI           |
+| 功能         | 说明                                                        |
+|------------|-----------------------------------------------------------|
+| **零配置**    | 只要你的类继承（或 mixin/on）自 `LocaleBase` 并声明 `String` 字段，即可被自动识别 |
+| **双向同步**   | 新增字段 → 自动加入 JSON；删除字段 → JSON 自动清理                         |
+| **源码重写**   | 把硬编码中文（或其它语言）字面量替换为 key，消除重复文本                            |
+| **多语言**    | `--lang=en_US / zh_CN / …` 一行命令生成任意语言包                    |
+| **跨平台**    | Windows、macOS、Linux、Flutter Web / 移动端均可使用                 |
+| **可脚本化**   | 标准 `dart run` / `dart pub global` 可直接调用，易于集成 CI           |
+| **自动声明**   | 运行命令后，会自动生成资源目录                                           |
+| **自动生成注释** | 运行命令后，会根据翻译文件的`value`，为`Dart`类自动生成注释                      |
 
 ---
 
@@ -49,19 +51,9 @@ dev_dependencies:
   flutter_locale_json: ^0.0.x
 ```
 
-### 2. 声明资源目录
-
-```yaml
-flutter:
-  assets:
-    - assets/translations/
-```
-
-### 3. 定义本地化类
+### 2. 定义本地化类
 
 ```dart
-abstract class LocaleBase {}
-
 mixin Common on LocaleBase {
   final String ok = "确定";
 }
@@ -71,7 +63,7 @@ class HomePageLocale extends LocaleBase with Common {
 }
 ```
 
-### 4. 生成
+### 3. 生成
 
 ```bash
 # 默认生成 zh_CN.json
@@ -81,7 +73,7 @@ dart run flutter_locale_json:generate
 dart run flutter_locale_json:generate -l en_US
 ```
 
-生成结果：
+生成的`Json`文件：
 
 ```json
 {
@@ -90,11 +82,22 @@ dart run flutter_locale_json:generate -l en_US
 }
 ```
 
-源码被自动替换：
+`Dart`源码被自动替换：
 
 ```dart
+/// 确定
 final String ok = "Common_ok";
+
+/// 主页标题
 final String title = "HomePageLocale_title";
+```
+
+### 4. 自定义翻译文件目录
+
+运行命令后，会自动生成`locale_gen.yaml`文件，在文件中可以配置翻译文件的目录地址：
+
+```yaml
+translations_dir: assets/translations/
 ```
 
 ### 5. 再次运行（增量维护）
@@ -137,7 +140,7 @@ jobs:
 import 'package:flutter_locale_json/flutter_locale_json.dart';
 
 final Map<String, Map<String, String>> locales =
-    await FlutterLocaleJson.loadLocalesFromAssets();
+    await FlutterLocaleLoader.loadLocalesFromAssets();
 
 print(locales['zh_CN']?['Common_ok']); // => 确定
 ```
@@ -151,7 +154,7 @@ import 'package:flutter_locale_json/flutter_locale_json.dart';
 
 final directory = Directory('test/translations');
 final locales =
-    await FlutterLocaleJson.loadLocalesFromDirectory(directory);
+    await FlutterLocaleLoader.loadLocalesFromDirectory(directory);
 
 print(locales['en_US']?['HomePageLocale_title']); // => Home Page Title
 ```
@@ -191,12 +194,12 @@ dart run flutter_locale_json:generate -l ja_JP
 
 ## 常见问题
 
-| 问题             | 解决方案                                                 |
-|----------------|------------------------------------------------------|
-| 找不到 `analyzer` | 确保放在 `dependencies:` 而非 `dev_dependencies:`          |
-| 命令不识别          | 用 `dart run flutter_locale_json:generate` 或全局激活      |
-| JSON 值丢失       | 首次生成只会用源码字面量；如果被置空说明未翻译                              |
-| 目录调整           | 修改脚本中的 `jsonDir = p.join('assets', 'translations');` |
+| 问题             | 解决方案                                            |
+|----------------|-------------------------------------------------|
+| 找不到 `analyzer` | 确保放在 `dependencies:` 而非 `dev_dependencies:`     |
+| 命令不识别          | 用 `dart run flutter_locale_json:generate` 或全局激活 |
+| JSON 值丢失       | 首次生成只会用源码字面量；如果被置空说明未翻译                         |
+| 目录调整           | 修改项目根目录下的`locale_gen.yaml`文件                    |
 
 ---
 

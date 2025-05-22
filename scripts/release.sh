@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-NEW_VER="$1"                 # 用法：bash scripts/release.sh 0.0.3
+NEW_VER="$1"                 # 用法：bash scripts/release.sh 0.0.9
 
 git switch main
 git pull --rebase origin main

@@ -1,6 +1,6 @@
 name: flutter_locale_json
 description: CLI tool to scan LocaleBase subclasses and generate locale JSON files.
-version: 0.0.11
+version: 0.0.12
 homepage:
 
 environment:

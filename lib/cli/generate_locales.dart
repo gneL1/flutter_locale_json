@@ -48,14 +48,10 @@ Future<void> generateLocales({
 
   /// ③ 同步 key（支持覆盖空串）
   for (final k in keys) {
-    /// 从源码拿到原始中文
     final init = initials[k] ?? k;
-
     translations.update(
       k,
-      /// value 为空 → 用 init
           (v) => v.isEmpty ? init : v,
-      /// key 不在 → 也用 init
       ifAbsent: () => init,
     );
   }
@@ -117,7 +113,6 @@ Future<void> generateLocales({
     if (localeFamily.contains(name)) return true;
     final parents = parentMap[name];
     if (parents == null) return false;
-
     for (final p in parents) {
       if (inherits(p)) {
         localeFamily.add(name);
@@ -154,7 +149,7 @@ Future<void> generateLocales({
           final key = '${owner}_${v.name.lexeme}';
           keys.add(key);
 
-          /// Analyzer 的 stringValue 会把转义解析成真实字符（例如 "\n" → 换行）
+          /// stringValue 会把转义解析成真实字符（例如 "\n" → 换行）
           initials[key] = init.stringValue ?? '';
 
           edits.add(_Edit(
@@ -163,8 +158,10 @@ Future<void> generateLocales({
             init.length,
             key,
 
-            /// 仍保留字段 offset（你未来若要用它也方便），但重写注释时我们用 e.offset 定位更稳
-            fieldOffset: field.offset,
+            /// ✅ 关键：这里一定要用 field.fields.offset
+            /// - field.offset 可能落在 doc comment 上，容易引起匹配/插入错位
+            /// - field.fields.offset 指向声明本体（String/late/final 这一行），不会被 doc comment 干扰
+            fieldOffset: field.fields.offset,
           ));
         }
       }
@@ -202,7 +199,7 @@ void _rewriteSource(List<_Edit> edits, Map<String, String> translations) {
     /// 探测文件使用的换行符（保留原风格）
     final eol = src.contains('\r\n') ? '\r\n' : '\n';
 
-    /// 1️⃣ 替换字符串字面量
+    /// 1️⃣ 替换字符串字面量（仍然锚定字面量 offset，这是正确的）
     final strEdits = entry.value..sort((a, b) => b.offset.compareTo(a.offset));
     for (final e in strEdits) {
       final quote = _detectQuote(src, e.offset);
@@ -213,39 +210,43 @@ void _rewriteSource(List<_Edit> edits, Map<String, String> translations) {
       ));
     }
 
-    /// 2️⃣ 注释增删改（支持常见特殊字符）
+    /// 2️⃣ 注释增删改
     ///
-    /// 保险起见：如果同一行/同一字段因“多变量声明”等导致被扫描到多次，
-    /// 我们只对同一个字段行处理一次注释。
-    final processedLineStarts = <int>{};
+    /// 去重：同一条字段声明只处理一次（避免一行声明多个变量时重复插入）
+    final processedAnchors = <int>{};
 
     for (final e in entry.value) {
       final rawValue = translations[e.replacement] ?? '';
 
-      /// 统一换行，避免不同平台/Unicode 行分隔符造成匹配错误
+      /// 统一换行，避免 \r\n/\r/\u2028/\u2029 干扰
       final normalized = _normalizeDocText(rawValue);
 
-      /// 用“规范化后文本”的 trim 判断是否为空
+      /// 用规范化后的 trim 判断是否为空（避免 value 只是空白/换行）
       final isEmptyValue = normalized.trim().isEmpty;
 
-      /// 用字符串字面量的位置定位字段行（最稳）
-      final lineStart = _lineStart(src, e.offset);
+      /// ✅ 关键：注释定位必须锚定到字段声明行，而不是字符串字面量行
+      final declLineStart = _lineStart(src, e.fieldOffset);
+      final indent = _leadingIndent(src, declLineStart);
 
-      /// 去重：同一字段行只处理一次
-      if (!processedLineStarts.add(lineStart)) continue;
+      /// 如果字段前面有注解（@xxx），doc comment 应该放在注解块上方
+      final anchorLineStart =
+      _findAnnotationBlockTopLineStart(src, declLineStart, indent);
 
-      final indent = _leadingIndent(src, lineStart);
-      final comment = _matchDocCommentBlock(src, lineStart, indent);
+      if (!processedAnchors.add(anchorLineStart)) continue;
+
+      final comment = _matchDocCommentBlock(src, anchorLineStart, indent);
 
       if (isEmptyValue) {
         /// value 为空：移除已有注释
         if (comment != null) {
-          textEdits.add(
-            _TextEdit(comment.start, comment.end - comment.start, ''),
-          );
+          textEdits.add(_TextEdit(
+            comment.start,
+            comment.end - comment.start,
+            '',
+          ));
         }
       } else {
-        /// value 非空：生成“安全 + 多行”的 doc comment 块
+        /// value 非空：构建安全 + 多行 doc comment 块
         final newComment = _buildDocCommentBlock(indent, normalized, eol);
 
         if (comment != null) {
@@ -257,7 +258,8 @@ void _rewriteSource(List<_Edit> edits, Map<String, String> translations) {
             ));
           }
         } else {
-          textEdits.add(_TextEdit(lineStart, 0, newComment));
+          /// 插入到“字段声明/注解块”的顶部行之前
+          textEdits.add(_TextEdit(anchorLineStart, 0, newComment));
         }
       }
     }
@@ -273,33 +275,27 @@ void _rewriteSource(List<_Edit> edits, Map<String, String> translations) {
 }
 
 /// ---------------- 辅助函数 --------------------------------------------------
-/// 根据字符串字面量起始偏移检测其引号类型（支持 r'' r""" ''' """）。
+/// 根据字符串字面量起始偏移检测其引号类型（支持 r'' r""" ''' """）
 ///
 /// 兼容两种情况：
-/// - offset 指向引号（常见）
-/// - offset 指向 r/R（某些 token/组合情况下可能出现）
+/// - offset 指向引号
+/// - offset 指向 r/R
 String _detectQuote(String src, int offset) {
   var i = offset;
   var hasR = false;
 
-  /// 如果 offset 直接指到 r/R，则先吃掉它
   if (i < src.length && (src[i] == 'r' || src[i] == 'R')) {
     hasR = true;
     i++;
-  } else {
-    /// 否则看看 offset 前一位是不是 r/R（兼容旧逻辑）
-    if (i > 0 && (src[i - 1] == 'r' || src[i - 1] == 'R')) {
-      hasR = true;
-    }
+  } else if (i > 0 && (src[i - 1] == 'r' || src[i - 1] == 'R')) {
+    hasR = true;
   }
 
   if (i >= src.length) return hasR ? 'r"' : '"';
 
   final quoteChar = src[i]; // ' 或 "
-  int cnt = 0;
-  while (i + cnt < src.length && src[i + cnt] == quoteChar) {
-    cnt++;
-  }
+  var cnt = 0;
+  while (i + cnt < src.length && src[i + cnt] == quoteChar) cnt++;
 
   final quotes = quoteChar * cnt;
   return hasR ? 'r$quotes' : quotes;
@@ -312,7 +308,7 @@ int _lineStart(String src, int offset) {
 
 /// 兼容 space + tab 的缩进
 String _leadingIndent(String src, int lineStart) {
-  int i = lineStart;
+  var i = lineStart;
   while (i < src.length) {
     final c = src[i];
     if (c == ' ' || c == '\t') {
@@ -324,20 +320,82 @@ String _leadingIndent(String src, int lineStart) {
   return src.substring(lineStart, i);
 }
 
+/// 返回上一行的 lineStart；如果没有上一行返回 -1
+int _prevLineStart(String src, int lineStart) {
+  if (lineStart <= 0) return -1;
+
+  /// 找到上一行的 '\n'
+  var i = lineStart - 1;
+  if (i >= 0 && src[i] == '\n') i--;
+  while (i >= 0 && src[i] != '\n') i--;
+  return i + 1;
+}
+
+/// 取出 [lineStart] 对应的“行文本”（不包含换行符）
+String _lineTextAt(String src, int lineStart) {
+  var end = lineStart;
+  while (end < src.length && src[end] != '\n') end++;
+  var line = src.substring(lineStart, end);
+
+  /// 去掉可能存在的 '\r'
+  if (line.endsWith('\r')) {
+    line = line.substring(0, line.length - 1);
+  }
+  return line;
+}
+
+/// 如果字段声明上方有注解（@xxx），doc comment 应该插入到注解块上方
+///
+/// 说明：
+/// - 只跨越“紧邻在声明上方、同缩进”的注解行
+/// - 不跨越空行（空行会切断 doc comment 关联）
+///
+/// 这能避免：
+///   @xxx
+///   String a = ...
+/// 被插成：
+///   @xxx
+///   /// ...
+///   String a = ...
+int _findAnnotationBlockTopLineStart(
+    String src,
+    int declLineStart,
+    String indent,
+    ) {
+  var top = declLineStart;
+
+  while (true) {
+    final prevStart = _prevLineStart(src, top);
+    if (prevStart < 0) break;
+
+    final prevLine = _lineTextAt(src, prevStart).trimRight();
+
+    /// 空行：停止（不跨越空行）
+    if (prevLine.trim().isEmpty) break;
+
+    /// 同缩进的注解行：向上吸收
+    if (prevLine.startsWith('$indent@')) {
+      top = prevStart;
+      continue;
+    }
+
+    break;
+  }
+
+  return top;
+}
+
 _RegMatch? _matchDocCommentBlock(String src, int lineStart, String indent) {
-  int i = lineStart - 1;
+  var i = lineStart - 1;
   while (i >= 0 && src[i] != '\n') i--;
   if (i < 0) return null;
   final blockEnd = i + 1;
 
   while (true) {
-    int j = i - 1;
+    var j = i - 1;
     while (j >= 0 && src[j] != '\n') j--;
     final line = src.substring(j + 1, i).trimRight();
-
-    /// 只匹配同缩进下的 /// 文档注释
     if (!line.startsWith('$indent///')) break;
-
     i = j;
   }
 
@@ -428,7 +486,7 @@ class _Edit {
   /// 用来替换字面量的键
   final String replacement;
 
-  /// 所属字段声明的偏移（当前不用于注释定位，但保留备用）
+  /// 字段声明（不含 doc comment）的 offset，用于注释定位
   final int fieldOffset;
 
   _Edit(

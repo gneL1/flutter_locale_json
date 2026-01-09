@@ -39,7 +39,8 @@ Future<void> generateLocales({
   /// ② 读取 / 创建 JSON
   late final Map<String, String> translations;
   if (jsonFile.existsSync()) {
-    translations = Map<String, String>.from(jsonDecode(jsonFile.readAsStringSync()));
+    translations =
+    Map<String, String>.from(jsonDecode(jsonFile.readAsStringSync()));
   } else {
     translations = <String, String>{};
   }
@@ -49,14 +50,17 @@ Future<void> generateLocales({
   for (final k in keys) {
     /// 从源码拿到原始中文
     final init = initials[k] ?? k;
+
     translations.update(
-        k,
-        /// value 为空 → 用 init
-        (v) => v.isEmpty ? init : v,
-        /// key 不在 → 也用 init
-        ifAbsent: () => init);
+      k,
+      /// value 为空 → 用 init
+          (v) => v.isEmpty ? init : v,
+      /// key 不在 → 也用 init
+      ifAbsent: () => init,
+    );
   }
 
+  /// 移除无用 key
   translations.removeWhere((k, _) => !keys.contains(k));
 
   /// ④ value == key 时清空
@@ -71,7 +75,8 @@ Future<void> generateLocales({
   _rewriteSource(edits, translations);
 
   stdout.writeln(
-      '✅ 生成完成：${jsonFile.path}（${translations.length} 条）${firstRun ? " - 首次初始化" : ""}');
+    '✅ 生成完成：${jsonFile.path}（${translations.length} 条）${firstRun ? " - 首次初始化" : ""}',
+  );
 }
 
 /// ---------------- 扫描源码 --------------------------------------------------
@@ -83,9 +88,11 @@ Future<void> generateLocales({
   for (final entity in libDir.listSync(recursive: true)) {
     if (entity is! File || !entity.path.endsWith('.dart')) continue;
 
-    final unit =
-        parseString(content: entity.readAsStringSync(), throwIfDiagnostics: false)
-            .unit;
+    final unit = parseString(
+      content: entity.readAsStringSync(),
+      throwIfDiagnostics: false,
+    ).unit;
+
     units.add(_ParsedUnit(entity.path, unit));
 
     for (final cls in unit.declarations.whereType<ClassDeclaration>()) {
@@ -105,10 +112,12 @@ Future<void> generateLocales({
 
   /// ---------- 计算 LocaleBase 家族 --------------------------------------
   final localeFamily = {baseClassName};
+
   bool inherits(String name) {
     if (localeFamily.contains(name)) return true;
     final parents = parentMap[name];
     if (parents == null) return false;
+
     for (final p in parents) {
       if (inherits(p)) {
         localeFamily.add(name);
@@ -118,7 +127,9 @@ Future<void> generateLocales({
     return false;
   }
 
-  for (final n in parentMap.keys) inherits(n);
+  for (final n in parentMap.keys) {
+    inherits(n);
+  }
 
   /// ---------- Pass2：收集字段 -------------------------------------------
   final keys = <String>{};
@@ -132,6 +143,7 @@ Future<void> generateLocales({
     void collect(String owner, Iterable<ClassMember> members) {
       for (final field in members.whereType<FieldDeclaration>()) {
         if (field.isStatic) continue;
+
         final typ = field.fields.type;
         if (typ is! NamedType || typ.name2.lexeme != 'String') continue;
 
@@ -141,15 +153,17 @@ Future<void> generateLocales({
 
           final key = '${owner}_${v.name.lexeme}';
           keys.add(key);
+
+          /// Analyzer 的 stringValue 会把转义解析成真实字符（例如 "\n" → 换行）
           initials[key] = init.stringValue ?? '';
 
-          /// ✅ 这里改成 field.offset
           edits.add(_Edit(
             filePath,
             init.offset,
             init.length,
             key,
-            /// FieldDeclaration.offset 指向的是「整个声明节点的起始位置」，
+
+            /// 仍保留字段 offset（你未来若要用它也方便），但重写注释时我们用 e.offset 定位更稳
             fieldOffset: field.offset,
           ));
         }
@@ -185,6 +199,9 @@ void _rewriteSource(List<_Edit> edits, Map<String, String> translations) {
     var src = file.readAsStringSync();
     final textEdits = <_TextEdit>[];
 
+    /// 探测文件使用的换行符（保留原风格）
+    final eol = src.contains('\r\n') ? '\r\n' : '\n';
+
     /// 1️⃣ 替换字符串字面量
     final strEdits = entry.value..sort((a, b) => b.offset.compareTo(a.offset));
     for (final e in strEdits) {
@@ -196,34 +213,48 @@ void _rewriteSource(List<_Edit> edits, Map<String, String> translations) {
       ));
     }
 
-    /// 2️⃣ 注释增删改
+    /// 2️⃣ 注释增删改（支持常见特殊字符）
+    ///
+    /// 保险起见：如果同一行/同一字段因“多变量声明”等导致被扫描到多次，
+    /// 我们只对同一个字段行处理一次注释。
+    final processedLineStarts = <int>{};
+
     for (final e in entry.value) {
-      final value = translations[e.replacement] ?? '';
+      final rawValue = translations[e.replacement] ?? '';
 
-      /// 用字符串字面量的位置代替 fieldOffset
-      /// 因为 e.offset 一定位于 = "xxx" 这一行，
-      /// 所以 _lineStart 得到的就是字段行的行首，判断就不会失误了。
-      final lineStart = _lineStart(src, e.offset);          // ✨ 改这里
-      // final lineStart = _lineStart(src, e.fieldOffset);
+      /// 统一换行，避免不同平台/Unicode 行分隔符造成匹配错误
+      final normalized = _normalizeDocText(rawValue);
 
-      final indent = _leadingSpaces(src, lineStart);
+      /// 用“规范化后文本”的 trim 判断是否为空
+      final isEmptyValue = normalized.trim().isEmpty;
+
+      /// 用字符串字面量的位置定位字段行（最稳）
+      final lineStart = _lineStart(src, e.offset);
+
+      /// 去重：同一字段行只处理一次
+      if (!processedLineStarts.add(lineStart)) continue;
+
+      final indent = _leadingIndent(src, lineStart);
       final comment = _matchDocCommentBlock(src, lineStart, indent);
 
-      /// 若项目在 Windows 上开发，源文件多为 \r\n，
-      final eol = src.contains('\r\n') ? '\r\n' : '\n';
-
-      if (value.isEmpty) {
+      if (isEmptyValue) {
+        /// value 为空：移除已有注释
         if (comment != null) {
-          textEdits.add(_TextEdit(comment.start, comment.end - comment.start, ''));
+          textEdits.add(
+            _TextEdit(comment.start, comment.end - comment.start, ''),
+          );
         }
       } else {
-        /// 在文件加载后探测 EOL 并统一处理
-        final newComment = '$indent/// $value$eol';
+        /// value 非空：生成“安全 + 多行”的 doc comment 块
+        final newComment = _buildDocCommentBlock(indent, normalized, eol);
 
         if (comment != null) {
           if (src.substring(comment.start, comment.end) != newComment) {
             textEdits.add(_TextEdit(
-                comment.start, comment.end - comment.start, newComment));
+              comment.start,
+              comment.end - comment.start,
+              newComment,
+            ));
           }
         } else {
           textEdits.add(_TextEdit(lineStart, 0, newComment));
@@ -231,27 +262,45 @@ void _rewriteSource(List<_Edit> edits, Map<String, String> translations) {
       }
     }
 
-    /// 3️⃣ 应用编辑
+    /// 3️⃣ 应用编辑（从后往前，避免 offset 失效）
     textEdits.sort((a, b) => b.offset.compareTo(a.offset));
     for (final t in textEdits) {
       src = src.replaceRange(t.offset, t.offset + t.length, t.replacement);
     }
+
     file.writeAsStringSync(_formatter.format(src));
   }
 }
 
 /// ---------------- 辅助函数 --------------------------------------------------
 /// 根据字符串字面量起始偏移检测其引号类型（支持 r'' r""" ''' """）。
+///
+/// 兼容两种情况：
+/// - offset 指向引号（常见）
+/// - offset 指向 r/R（某些 token/组合情况下可能出现）
 String _detectQuote(String src, int offset) {
-  int s = offset;
-  /// 检测原始字符串前缀 r/
-  final hasR = s > 0 && (src[s - 1] == 'r' || src[s - 1] == 'R');
-  if (hasR) s--;
+  var i = offset;
+  var hasR = false;
 
-  /// 统计连续的相同引号数量
-  final quoteChar = src[offset]; // ' 或 "
+  /// 如果 offset 直接指到 r/R，则先吃掉它
+  if (i < src.length && (src[i] == 'r' || src[i] == 'R')) {
+    hasR = true;
+    i++;
+  } else {
+    /// 否则看看 offset 前一位是不是 r/R（兼容旧逻辑）
+    if (i > 0 && (src[i - 1] == 'r' || src[i - 1] == 'R')) {
+      hasR = true;
+    }
+  }
+
+  if (i >= src.length) return hasR ? 'r"' : '"';
+
+  final quoteChar = src[i]; // ' 或 "
   int cnt = 0;
-  while (offset + cnt < src.length && src[offset + cnt] == quoteChar) cnt++;
+  while (i + cnt < src.length && src[i + cnt] == quoteChar) {
+    cnt++;
+  }
+
   final quotes = quoteChar * cnt;
   return hasR ? 'r$quotes' : quotes;
 }
@@ -261,9 +310,17 @@ int _lineStart(String src, int offset) {
   return offset;
 }
 
-String _leadingSpaces(String src, int lineStart) {
+/// 兼容 space + tab 的缩进
+String _leadingIndent(String src, int lineStart) {
   int i = lineStart;
-  while (i < src.length && src[i] == ' ') i++;
+  while (i < src.length) {
+    final c = src[i];
+    if (c == ' ' || c == '\t') {
+      i++;
+      continue;
+    }
+    break;
+  }
   return src.substring(lineStart, i);
 }
 
@@ -271,17 +328,91 @@ _RegMatch? _matchDocCommentBlock(String src, int lineStart, String indent) {
   int i = lineStart - 1;
   while (i >= 0 && src[i] != '\n') i--;
   if (i < 0) return null;
-  int blockEnd = i + 1;
+  final blockEnd = i + 1;
 
   while (true) {
     int j = i - 1;
     while (j >= 0 && src[j] != '\n') j--;
     final line = src.substring(j + 1, i).trimRight();
+
+    /// 只匹配同缩进下的 /// 文档注释
     if (!line.startsWith('$indent///')) break;
+
     i = j;
   }
+
   if (blockEnd == i + 1) return null;
   return _RegMatch(i + 1, blockEnd);
+}
+
+/// ---------------- 特殊字符支持：注释安全化 ----------------------------------
+/// 规范化：把各种换行统一成 '\n'，并处理常见 Unicode 行分隔符
+String _normalizeDocText(String input) {
+  return input
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n')
+      .replaceAll('\u2028', '\n') // LINE SEPARATOR
+      .replaceAll('\u2029', '\n'); // PARAGRAPH SEPARATOR
+}
+
+/// 把注释里不适合直接出现的控制字符变成“可读且安全”的文本
+/// - '\n' 保留（用于拆行）
+/// - '\t' 转成两个空格（避免缩进错乱）
+/// - '\b' '\f' '\v' 转成转义文本
+/// - 其它 0x00-0x1F / 0x7F 转成 \u{XX}
+String _sanitizeForDocComment(String input) {
+  final s = _normalizeDocText(input);
+  final buf = StringBuffer();
+
+  for (final rune in s.runes) {
+    switch (rune) {
+      case 0x0A: // \n
+        buf.write('\n');
+        break;
+      case 0x09: // \t
+        buf.write('  ');
+        break;
+      case 0x08: // \b
+        buf.write(r'\b');
+        break;
+      case 0x0C: // \f
+        buf.write(r'\f');
+        break;
+      case 0x0B: // \v
+        buf.write(r'\v');
+        break;
+      default:
+        if (rune < 0x20 || rune == 0x7F) {
+          final hex = rune.toRadixString(16).toUpperCase();
+          buf.write(r'\u{');
+          buf.write(hex);
+          buf.write('}');
+        } else {
+          buf.write(String.fromCharCodes([rune]));
+        }
+        break;
+    }
+  }
+
+  return buf.toString();
+}
+
+/// 把翻译值构造成连续的 Dart 文档注释块（每行都带 ///）
+/// - 支持多行
+/// - 支持空行（空行用 "///" 占位，保证仍是连续 doc comment 块）
+String _buildDocCommentBlock(String indent, String value, String eol) {
+  final safe = _sanitizeForDocComment(value);
+  final lines = safe.split('\n');
+
+  final sb = StringBuffer();
+  for (final line in lines) {
+    if (line.isEmpty) {
+      sb.write('$indent///$eol');
+    } else {
+      sb.write('$indent/// $line$eol');
+    }
+  }
+  return sb.toString();
 }
 
 /// ---------------- 数据结构 --------------------------------------------------
@@ -297,10 +428,16 @@ class _Edit {
   /// 用来替换字面量的键
   final String replacement;
 
-  /// 所属字段声明的偏移（用于注释）
+  /// 所属字段声明的偏移（当前不用于注释定位，但保留备用）
   final int fieldOffset;
-  _Edit(this.path, this.offset, this.length, this.replacement,
-      {required this.fieldOffset});
+
+  _Edit(
+      this.path,
+      this.offset,
+      this.length,
+      this.replacement, {
+        required this.fieldOffset,
+      });
 }
 
 class _TextEdit {
